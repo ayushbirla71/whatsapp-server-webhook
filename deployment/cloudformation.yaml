@@ -1,0 +1,229 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'WhatsApp Webhook Lambda Function Infrastructure'
+
+Parameters:
+  FunctionName:
+    Type: String
+    Default: 'whatsapp-webhook-handler'
+    Description: 'Name of the Lambda function'
+  
+  Environment:
+    Type: String
+    Default: 'development'
+    AllowedValues: ['development', 'staging', 'production']
+    Description: 'Deployment environment'
+  
+  DBHost:
+    Type: String
+    Description: 'Database host endpoint'
+  
+  DBName:
+    Type: String
+    Default: 'whatsapp_db'
+    Description: 'Database name'
+  
+  DBUser:
+    Type: String
+    Default: 'postgres'
+    Description: 'Database username'
+  
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: 'Database password'
+  
+  WebhookVerifyToken:
+    Type: String
+    NoEcho: true
+    Description: 'WhatsApp webhook verification token'
+  
+  WebhookSecret:
+    Type: String
+    NoEcho: true
+    Description: 'WhatsApp webhook secret for signature verification'
+
+Resources:
+  # IAM Role for Lambda Function
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${FunctionName}-execution-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: CloudWatchLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+
+  # Lambda Function
+  WhatsAppWebhookFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref FunctionName
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              body: JSON.stringify({ message: 'Function created, awaiting deployment' })
+            };
+          };
+      Environment:
+        Variables:
+          NODE_ENV: !Ref Environment
+          DB_HOST: !Ref DBHost
+          DB_NAME: !Ref DBName
+          DB_USER: !Ref DBUser
+          DB_PASSWORD: !Ref DBPassword
+          WEBHOOK_VERIFY_TOKEN: !Ref WebhookVerifyToken
+          WEBHOOK_SECRET: !Ref WebhookSecret
+          LOG_LEVEL: !If [IsProduction, 'info', 'debug']
+          ENABLE_SIGNATURE_VERIFICATION: 'true'
+          ENABLE_STRUCTURED_LOGGING: 'true'
+      Timeout: 30
+      MemorySize: 512
+      ReservedConcurrencyLimit: 10
+
+  # CloudWatch Log Group
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${FunctionName}'
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  # API Gateway for webhook endpoint
+  WebhookApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${FunctionName}-api'
+      Description: 'API Gateway for WhatsApp webhook'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Resource
+  WebhookResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref WebhookApi
+      ParentId: !GetAtt WebhookApi.RootResourceId
+      PathPart: 'webhook'
+
+  # API Gateway Method (GET for verification)
+  WebhookMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebhookApi
+      ResourceId: !Ref WebhookResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WhatsAppWebhookFunction.Arn}/invocations'
+
+  # API Gateway Method (POST for webhook events)
+  WebhookMethodPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebhookApi
+      ResourceId: !Ref WebhookResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WhatsAppWebhookFunction.Arn}/invocations'
+
+  # API Gateway Deployment
+  WebhookDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - WebhookMethodGet
+      - WebhookMethodPost
+    Properties:
+      RestApiId: !Ref WebhookApi
+      StageName: !Ref Environment
+
+  # Lambda Permission for API Gateway
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref WhatsAppWebhookFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookApi}/*/*/*'
+
+  # CloudWatch Alarm for Lambda Errors
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${FunctionName}-errors'
+      AlarmDescription: 'Lambda function error rate'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FunctionName
+
+  # CloudWatch Alarm for Lambda Duration
+  LambdaDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${FunctionName}-duration'
+      AlarmDescription: 'Lambda function duration'
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 25000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FunctionName
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, 'production']
+
+Outputs:
+  LambdaFunctionArn:
+    Description: 'ARN of the Lambda function'
+    Value: !GetAtt WhatsAppWebhookFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaFunctionArn'
+
+  WebhookUrl:
+    Description: 'Webhook URL for WhatsApp'
+    Value: !Sub 'https://${WebhookApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/webhook'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebhookUrl'
+
+  ApiGatewayId:
+    Description: 'API Gateway ID'
+    Value: !Ref WebhookApi
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiGatewayId'
