@@ -1,4 +1,4 @@
-const pool = require('../db/connection');
+const pool = require("../db/connection");
 
 class Organization {
   constructor(data) {
@@ -21,11 +21,11 @@ class Organization {
   // Find organization by ID
   static async findById(id) {
     try {
-      const query = 'SELECT * FROM organizations WHERE id = $1 AND status = $2';
-      const result = await pool.query(query, [id, 'active']);
+      const query = "SELECT * FROM organizations WHERE id = $1 AND status = $2";
+      const result = await pool.query(query, [id, "active"]);
       return result.rows.length > 0 ? new Organization(result.rows[0]) : null;
     } catch (error) {
-      console.error('Error finding organization by ID:', error);
+      console.error("Error finding organization by ID:", error);
       throw error;
     }
   }
@@ -33,11 +33,15 @@ class Organization {
   // Find organization by WhatsApp Business Account ID
   static async findByWhatsAppBusinessAccountId(businessAccountId) {
     try {
-      const query = 'SELECT * FROM organizations WHERE whatsapp_business_account_id = $1 AND status = $2';
-      const result = await pool.query(query, [businessAccountId, 'active']);
+      const query =
+        "SELECT * FROM organizations WHERE whatsapp_business_account_id = $1 AND status = $2";
+      const result = await pool.query(query, [businessAccountId, "active"]);
       return result.rows.length > 0 ? new Organization(result.rows[0]) : null;
     } catch (error) {
-      console.error('Error finding organization by WhatsApp Business Account ID:', error);
+      console.error(
+        "Error finding organization by WhatsApp Business Account ID:",
+        error
+      );
       throw error;
     }
   }
@@ -45,11 +49,15 @@ class Organization {
   // Find organization by WhatsApp Phone Number ID
   static async findByWhatsAppPhoneNumberId(phoneNumberId) {
     try {
-      const query = 'SELECT * FROM organizations WHERE whatsapp_phone_number_id = $1 AND status = $2';
-      const result = await pool.query(query, [phoneNumberId, 'active']);
+      const query =
+        "SELECT * FROM organizations WHERE whatsapp_phone_number_id = $1 AND status = $2";
+      const result = await pool.query(query, [phoneNumberId, "active"]);
       return result.rows.length > 0 ? new Organization(result.rows[0]) : null;
     } catch (error) {
-      console.error('Error finding organization by WhatsApp Phone Number ID:', error);
+      console.error(
+        "Error finding organization by WhatsApp Phone Number ID:",
+        error
+      );
       throw error;
     }
   }
@@ -57,11 +65,15 @@ class Organization {
   // Find organization by webhook verify token
   static async findByWebhookVerifyToken(verifyToken) {
     try {
-      const query = 'SELECT * FROM organizations WHERE whatsapp_webhook_verify_token = $1 AND status = $2';
-      const result = await pool.query(query, [verifyToken, 'active']);
+      const query =
+        "SELECT * FROM organizations WHERE whatsapp_webhook_verify_token = $1 AND status = $2";
+      const result = await pool.query(query, [verifyToken, "active"]);
       return result.rows.length > 0 ? new Organization(result.rows[0]) : null;
     } catch (error) {
-      console.error('Error finding organization by webhook verify token:', error);
+      console.error(
+        "Error finding organization by webhook verify token:",
+        error
+      );
       throw error;
     }
   }
@@ -69,11 +81,12 @@ class Organization {
   // Get all active organizations
   static async findAllActive() {
     try {
-      const query = 'SELECT * FROM organizations WHERE status = $1 ORDER BY name';
-      const result = await pool.query(query, ['active']);
-      return result.rows.map(row => new Organization(row));
+      const query =
+        "SELECT * FROM organizations WHERE status = $1 ORDER BY name";
+      const result = await pool.query(query, ["active"]);
+      return result.rows.map((row) => new Organization(row));
     } catch (error) {
-      console.error('Error finding active organizations:', error);
+      console.error("Error finding active organizations:", error);
       throw error;
     }
   }
@@ -87,7 +100,7 @@ class Organization {
       phoneNumberId: this.whatsappPhoneNumberId,
       accessToken: this.whatsappAccessToken,
       appId: this.whatsappAppId,
-      appSecret: this.whatsappAppSecret
+      appSecret: this.whatsappAppSecret,
     };
   }
 
@@ -105,7 +118,11 @@ class Organization {
   getWebhookSecret() {
     // You can derive this from app secret or store it separately
     // For now, using app secret or fallback to environment variable
-    return this.whatsappAppSecret || process.env.DEFAULT_WEBHOOK_SECRET || 'default_secret';
+    return (
+      this.whatsappWebhookVerifyToken ||
+      process.env.DEFAULT_WEBHOOK_SECRET ||
+      "default_secret"
+    );
   }
 
   // Update organization WhatsApp configuration
@@ -125,7 +142,7 @@ class Organization {
         WHERE id = $8
         RETURNING *
       `;
-      
+
       const result = await pool.query(query, [
         config.businessAccountId,
         config.accessToken,
@@ -134,40 +151,48 @@ class Organization {
         config.webhookUrl,
         config.appId,
         config.appSecret,
-        id
+        id,
       ]);
-      
+
       return result.rows.length > 0 ? new Organization(result.rows[0]) : null;
     } catch (error) {
-      console.error('Error updating organization WhatsApp config:', error);
+      console.error("Error updating organization WhatsApp config:", error);
       throw error;
     }
   }
 
   // Extract organization ID from webhook payload
   static extractOrganizationFromWebhook(webhookPayload) {
+    let bussinessInfo = {};
     try {
       // Try to extract from different parts of the webhook payload
       if (webhookPayload.entry && webhookPayload.entry.length > 0) {
         const entry = webhookPayload.entry[0];
-        
+
         // Business Account ID is usually in the entry ID
         if (entry.id) {
-          return { businessAccountId: entry.id };
+          bussinessInfo.businessAccountId = entry.id;
         }
-        
+
         // Phone Number ID might be in the changes
         if (entry.changes && entry.changes.length > 0) {
           const change = entry.changes[0];
-          if (change.value && change.value.metadata && change.value.metadata.phone_number_id) {
-            return { phoneNumberId: change.value.metadata.phone_number_id };
+          if (
+            change.value &&
+            change.value.metadata &&
+            change.value.metadata.phone_number_id
+          ) {
+            bussinessInfo.phoneNumberId = change.value.metadata.phone_number_id;
           }
         }
+
+        return bussinessInfo;
+      } else {
+        console.log("No entry found in webhook payload");
+        return null;
       }
-      
-      return null;
     } catch (error) {
-      console.error('Error extracting organization from webhook:', error);
+      console.error("Error extracting organization from webhook:", error);
       return null;
     }
   }

@@ -7,6 +7,36 @@ CREATE TYPE webhook_event_type AS ENUM (
   'message_received', 'user_status', 'error', 'interactive_response'
 );
 
+-- Function to automatically update updated_at column
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Organizations table for multi-tenant support
+CREATE TABLE IF NOT EXISTS organizations (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  status VARCHAR(50) DEFAULT 'active' CHECK (status IN ('active', 'inactive', 'suspended')),
+
+  -- WhatsApp Business API configuration
+  whatsapp_business_account_id VARCHAR(255),
+  whatsapp_access_token TEXT,
+  whatsapp_phone_number_id VARCHAR(255),
+  whatsapp_webhook_verify_token VARCHAR(255),
+  whatsapp_webhook_url TEXT,
+  whatsapp_app_id VARCHAR(255),
+  whatsapp_app_secret TEXT,
+
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  created_by UUID
+);
+
 -- Webhook events table for tracking all webhook events
 CREATE TABLE IF NOT EXISTS webhook_events (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -94,9 +124,20 @@ CREATE TABLE IF NOT EXISTS incoming_messages (
   raw_payload JSONB NOT NULL,
   processed BOOLEAN DEFAULT false,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Create indexes for better performance
+
+-- Organizations table indexes
+CREATE INDEX IF NOT EXISTS idx_organizations_status ON organizations(status);
+CREATE INDEX IF NOT EXISTS idx_organizations_name ON organizations(name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_business_account_id
+  ON organizations(whatsapp_business_account_id) WHERE whatsapp_business_account_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_phone_number_id
+  ON organizations(whatsapp_phone_number_id) WHERE whatsapp_phone_number_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_organizations_webhook_verify_token
+  ON organizations(whatsapp_webhook_verify_token) WHERE whatsapp_webhook_verify_token IS NOT NULL;
 
 -- Messages table indexes
 CREATE INDEX IF NOT EXISTS idx_messages_organization_id ON messages(organization_id);
@@ -130,6 +171,9 @@ CREATE INDEX IF NOT EXISTS idx_incoming_messages_processed ON incoming_messages(
 CREATE INDEX IF NOT EXISTS idx_incoming_messages_context_campaign ON incoming_messages(context_campaign_id);
 CREATE INDEX IF NOT EXISTS idx_incoming_messages_timestamp ON incoming_messages(timestamp);
 
--- Create trigger for messages updated_at
+-- Create triggers for updated_at columns
+CREATE TRIGGER update_organizations_updated_at BEFORE UPDATE ON organizations
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 CREATE TRIGGER update_messages_updated_at BEFORE UPDATE ON messages
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

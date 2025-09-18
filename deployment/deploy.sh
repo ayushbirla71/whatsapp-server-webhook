@@ -39,15 +39,21 @@ check_aws_cli() {
 
 # Function to check if required environment variables are set
 check_environment_variables() {
-    required_vars=("DB_HOST" "DB_PASSWORD" "WEBHOOK_VERIFY_TOKEN" "WEBHOOK_SECRET")
-    
+    required_vars=("DB_HOST" "DB_PASSWORD")
+
     for var in "${required_vars[@]}"; do
         if [ -z "${!var}" ]; then
             print_error "Environment variable $var is not set"
+            print_error "Required environment variables:"
+            print_error "  DB_HOST - Your PostgreSQL database host"
+            print_error "  DB_PASSWORD - Your PostgreSQL database password"
+            print_error "  DB_NAME (optional) - Database name (default: whatsapp_db)"
+            print_error "  DB_USER (optional) - Database user (default: postgres)"
             exit 1
         fi
     done
     print_status "All required environment variables are set"
+    print_warning "Note: Webhook tokens are now configured per organization in the database"
 }
 
 # Function to package Lambda function
@@ -86,8 +92,6 @@ deploy_infrastructure() {
             DBName="${DB_NAME:-whatsapp_db}" \
             DBUser="${DB_USER:-postgres}" \
             DBPassword="$DB_PASSWORD" \
-            WebhookVerifyToken="$WEBHOOK_VERIFY_TOKEN" \
-            WebhookSecret="$WEBHOOK_SECRET" \
         --capabilities CAPABILITY_NAMED_IAM \
         --region "$REGION"
     
@@ -123,26 +127,20 @@ get_webhook_url() {
 # Function to test the deployment
 test_deployment() {
     print_status "Testing deployment..."
-    
+
     # Test webhook verification endpoint
     WEBHOOK_URL=$(aws cloudformation describe-stacks \
         --stack-name "$STACK_NAME" \
         --region "$REGION" \
         --query 'Stacks[0].Outputs[?OutputKey==`WebhookUrl`].OutputValue' \
         --output text)
-    
+
     if [ -n "$WEBHOOK_URL" ]; then
-        TEST_URL="${WEBHOOK_URL}?hub.mode=subscribe&hub.verify_token=${WEBHOOK_VERIFY_TOKEN}&hub.challenge=test123"
-        
-        print_status "Testing webhook verification..."
-        RESPONSE=$(curl -s -w "%{http_code}" "$TEST_URL")
-        HTTP_CODE="${RESPONSE: -3}"
-        
-        if [ "$HTTP_CODE" = "200" ]; then
-            print_status "Webhook verification test passed"
-        else
-            print_warning "Webhook verification test failed with HTTP code: $HTTP_CODE"
-        fi
+        print_status "Webhook URL: $WEBHOOK_URL"
+        print_warning "To test webhook verification, you need to:"
+        print_warning "1. Configure an organization in your database with WhatsApp settings"
+        print_warning "2. Use the organization's webhook verify token in the test URL"
+        print_warning "Example: ${WEBHOOK_URL}?hub.mode=subscribe&hub.verify_token=YOUR_ORG_VERIFY_TOKEN&hub.challenge=test123"
     fi
 }
 

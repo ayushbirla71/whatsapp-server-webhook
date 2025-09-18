@@ -3,6 +3,7 @@ const Message = require("./models/Message");
 const CampaignAudience = require("./models/CampaignAudience");
 const WebhookEvent = require("./models/WebhookEvent");
 const Organization = require("./models/Organization");
+const IncomingMessage = require("./models/IncomingMessage");
 const { logger, errorHandler } = require("./utils/logger");
 const { config } = require("./config/config");
 
@@ -112,12 +113,9 @@ async function handleWebhook(event) {
 
     if (orgInfo) {
       // Find organization by business account ID or phone number ID
-      if (orgInfo.businessAccountId) {
+      if (orgInfo.businessAccountId && orgInfo.phoneNumberId) {
         organization = await Organization.findByWhatsAppBusinessAccountId(
-          orgInfo.businessAccountId
-        );
-      } else if (orgInfo.phoneNumberId) {
-        organization = await Organization.findByWhatsAppPhoneNumberId(
+          orgInfo.businessAccountId,
           orgInfo.phoneNumberId
         );
       }
@@ -340,6 +338,9 @@ async function handleMessageStatus(status, originalChange, organization) {
  * Handle incoming messages (optional - for logging/tracking)
  */
 async function handleIncomingMessage(message, originalChange, organization) {
+  let webhookEvent = null;
+  let incomingMessage = null;
+
   try {
     console.log("Handling incoming message:", JSON.stringify(message, null, 2));
 
@@ -359,10 +360,26 @@ async function handleIncomingMessage(message, originalChange, organization) {
       context,
     } = message;
 
+    // Check for duplicate message
+    const isDuplicate = await IncomingMessage.isDuplicate(whatsappMessageId);
+    if (isDuplicate) {
+      console.log(
+        "Duplicate incoming message detected, skipping:",
+        whatsappMessageId
+      );
+      return { success: true, duplicate: true };
+    }
+
+    // Extract phone numbers from the change metadata
+    const metadata = originalChange.value?.metadata;
+    const toPhoneNumber =
+      metadata?.phone_number_id || metadata?.display_phone_number;
+
     // Extract message content based on type
     let content = "";
     let mediaUrl = null;
     let mediaType = null;
+    let mediaSize = null;
     let interactionData = null;
 
     switch (type) {
@@ -373,6 +390,34 @@ async function handleIncomingMessage(message, originalChange, organization) {
         content = image?.caption || "Image message";
         mediaUrl = image?.id;
         mediaType = image?.mime_type;
+        mediaSize = image?.file_size;
+        break;
+      case "video":
+        content = video?.caption || "Video message";
+        mediaUrl = video?.id;
+        mediaType = video?.mime_type;
+        mediaSize = video?.file_size;
+        break;
+      case "audio":
+        content = "Audio message";
+        mediaUrl = audio?.id;
+        mediaType = audio?.mime_type;
+        mediaSize = audio?.file_size;
+        break;
+      case "document":
+        content = document?.caption || document?.filename || "Document message";
+        mediaUrl = document?.id;
+        mediaType = document?.mime_type;
+        mediaSize = document?.file_size;
+        break;
+      case "location":
+        content = `Location: ${location?.latitude}, ${location?.longitude}`;
+        if (location?.name) content += ` (${location.name})`;
+        break;
+      case "contacts":
+        content = `Contact: ${
+          contacts?.[0]?.name?.formatted_name || "Contact shared"
+        }`;
         break;
       case "interactive":
         // Handle interactive message responses (buttons, lists, etc.)
@@ -389,6 +434,7 @@ async function handleIncomingMessage(message, originalChange, organization) {
             type: "list_reply",
             list_id: interactive.list_reply.id,
             list_title: interactive.list_reply.title,
+            list_description: interactive.list_reply.description,
           };
         }
         break;
@@ -396,45 +442,106 @@ async function handleIncomingMessage(message, originalChange, organization) {
         content = `${type} message`;
     }
 
-    // Create webhook event record for incoming message
-    const webhookEvent = await WebhookEvent.create({
+    // Try to find the original campaign message if this is a reply
+    let contextCampaignId = null;
+    let contextMessageId = null;
+
+    if (context?.id) {
+      console.log(`Message is a reply to: ${context.id}`);
+      // Try to find the original message in our messages table
+      const originalMessage = await Message.findByWhatsAppId(context.id);
+      if (originalMessage) {
+        contextCampaignId = originalMessage.campaignId;
+        contextMessageId = context.id;
+        console.log(`Linked reply to campaign: ${contextCampaignId}`);
+      }
+    }
+
+    // Create incoming message record
+    incomingMessage = await IncomingMessage.create({
       organizationId: organization.id,
+      whatsappMessageId: whatsappMessageId,
+      fromPhoneNumber: from,
+      toPhoneNumber: toPhoneNumber,
+      messageType: type,
+      content: content,
+      mediaUrl: mediaUrl,
+      mediaType: mediaType,
+      mediaSize: mediaSize,
+      timestamp: timestamp ? new Date(parseInt(timestamp) * 1000) : new Date(),
+      interactiveType: interactionData?.type || null,
+      interactiveData: interactionData,
+      contextMessageId: contextMessageId,
+      contextCampaignId: contextCampaignId,
+      rawPayload: message,
+    });
+
+    console.log("Created incoming message record:", incomingMessage.id);
+
+    // Create webhook event record for incoming message
+    webhookEvent = await WebhookEvent.create({
+      organizationId: organization.id,
+      campaignId: contextCampaignId,
       eventType: "message_received",
       whatsappMessageId: whatsappMessageId,
+      fromPhoneNumber: from,
+      toPhoneNumber: toPhoneNumber,
       status: "received",
       timestamp: timestamp ? new Date(parseInt(timestamp) * 1000) : new Date(),
+      interactiveType: interactionData?.type || null,
+      interactiveData: interactionData,
       rawPayload: originalChange,
     });
 
     console.log("Created webhook event for incoming message:", webhookEvent.id);
 
-    // TODO: Call external function to process incoming message
+    // Log the received message
     console.log(`Received ${type} message from ${from}: ${content}`);
 
     if (interactionData) {
       console.log("Interactive response data:", interactionData);
       // TODO: Handle interactive responses - update tracking, trigger next template
+      // You can implement custom logic here based on button/list selections
     }
 
-    if (context?.id) {
-      console.log(`Message is a reply to: ${context.id}`);
-      // TODO: Link this response to the original campaign message
-    }
+    // Mark incoming message as processed (for now)
+    await IncomingMessage.markAsProcessed(incomingMessage.id);
 
-    // Mark as processed
+    // Mark webhook event as processed
     await WebhookEvent.markAsProcessed(webhookEvent.id);
+
+    // TODO: Call external function to process incoming message
+    // This is where you would call your main server's incoming message handler
+    // Example: await callMainServerIncomingMessageHandler(incomingMessage, organization);
 
     return {
       success: true,
+      incomingMessageId: incomingMessage.id,
       webhookEventId: webhookEvent.id,
       messageType: type,
       from: from,
       content: content,
       interactionData: interactionData,
+      contextCampaignId: contextCampaignId,
     };
   } catch (error) {
     console.error("Error handling incoming message:", error);
-    return { success: false, error: error.message };
+
+    // Try to mark webhook event as processed with error if it was created
+    try {
+      if (webhookEvent && webhookEvent.id) {
+        await WebhookEvent.markAsProcessed(webhookEvent.id, error.message);
+      }
+    } catch (markError) {
+      console.error("Error marking webhook event as processed:", markError);
+    }
+
+    return {
+      success: false,
+      error: error.message,
+      incomingMessageId: incomingMessage?.id || null,
+      webhookEventId: webhookEvent?.id || null,
+    };
   }
 }
 
