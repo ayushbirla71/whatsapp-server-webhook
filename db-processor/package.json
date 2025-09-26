@@ -1,0 +1,26 @@
+{
+  "name": "whatsapp-db-processor",
+  "version": "1.0.0",
+  "description": "WhatsApp webhook database processor Lambda function - processes SQS messages",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "whatsapp",
+    "webhook",
+    "lambda",
+    "sqs",
+    "database",
+    "postgresql"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "pg": "^8.11.3",
+    "pg-pool": "^3.6.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

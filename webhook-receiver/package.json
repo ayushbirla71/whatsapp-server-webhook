@@ -1,0 +1,25 @@
+{
+  "name": "whatsapp-webhook-receiver",
+  "version": "1.0.0",
+  "description": "WhatsApp webhook receiver Lambda function - forwards to SQS",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "whatsapp",
+    "webhook",
+    "lambda",
+    "sqs",
+    "aws"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "aws-sdk": "^2.1691.0",
+    "pg": "^8.11.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

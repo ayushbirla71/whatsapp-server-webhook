@@ -1,0 +1,29 @@
+{
+  "name": "whatsapp-webhook-tests",
+  "version": "1.0.0",
+  "description": "Test suite for two-Lambda WhatsApp webhook architecture",
+  "main": "test-two-lambda-architecture.js",
+  "scripts": {
+    "test": "node test-two-lambda-architecture.js",
+    "test:verification": "node -e \"require('./test-two-lambda-architecture').testWebhookVerification()\"",
+    "test:status": "node -e \"require('./test-two-lambda-architecture').testMessageStatusWebhook()\"",
+    "test:incoming": "node -e \"require('./test-two-lambda-architecture').testIncomingTextMessage()\"",
+    "test:interactive": "node -e \"require('./test-two-lambda-architecture').testInteractiveButtonResponse()\"",
+    "test:media": "node -e \"require('./test-two-lambda-architecture').testMediaMessage()\"",
+    "test:sqs": "node -e \"require('./test-two-lambda-architecture').testSQSQueue()\"",
+    "logs:receiver": "node -e \"require('./test-two-lambda-architecture').checkLambdaLogs('whatsapp-webhook-receiver-development')\"",
+    "logs:processor": "node -e \"require('./test-two-lambda-architecture').checkLambdaLogs('whatsapp-db-processor-development')\""
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1691.0"
+  },
+  "keywords": [
+    "whatsapp",
+    "webhook",
+    "lambda",
+    "sqs",
+    "testing"
+  ],
+  "author": "",
+  "license": "MIT"
+}

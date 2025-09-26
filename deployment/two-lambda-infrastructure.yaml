@@ -1,0 +1,313 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Two-Lambda WhatsApp Webhook Architecture with SQS"
+
+Parameters:
+  Environment:
+    Type: String
+    Default: "development"
+    AllowedValues: ["development", "staging", "production"]
+    Description: "Deployment environment"
+
+  WebhookVerifyToken:
+    Type: String
+    NoEcho: true
+    Description: "WhatsApp webhook verification token"
+    Default: "your_webhook_verify_token"
+
+  WebhookSecret:
+    Type: String
+    NoEcho: true
+    Description: "WhatsApp webhook secret for signature verification"
+    Default: "your_webhook_secret"
+
+  DBHost:
+    Type: String
+    Description: "Database host endpoint"
+
+  DBName:
+    Type: String
+    Default: "whatsapp_db"
+    Description: "Database name"
+
+  DBUser:
+    Type: String
+    Default: "postgres"
+    Description: "Database username"
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: "Database password"
+
+Conditions:
+  IsProduction: !Equals [!Ref Environment, "production"]
+
+Resources:
+  # SQS Queue for webhook events
+  WebhookQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "whatsapp-webhook-queue-${Environment}"
+      VisibilityTimeoutSeconds: 300 # 5 minutes (should be 6x Lambda timeout)
+      MessageRetentionPeriod: 1209600 # 14 days
+      ReceiveMessageWaitTimeSeconds: 20 # Long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WebhookDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: WhatsAppWebhook
+
+  # Dead Letter Queue for failed messages
+  WebhookDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "whatsapp-webhook-dlq-${Environment}"
+      MessageRetentionPeriod: 1209600 # 14 days
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: WhatsAppWebhook
+
+  # IAM Role for Webhook Receiver Lambda
+  WebhookReceiverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "whatsapp-webhook-receiver-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSPublishPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt WebhookQueue.Arn
+
+  # IAM Role for DB Processor Lambda
+  DBProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "whatsapp-db-processor-role-${Environment}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SQSConsumePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt WebhookQueue.Arn
+                  - !GetAtt WebhookDeadLetterQueue.Arn
+
+  # Webhook Receiver Lambda Function
+  WebhookReceiverFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "whatsapp-webhook-receiver-${Environment}"
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt WebhookReceiverRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              body: JSON.stringify({ message: 'Webhook receiver function created, awaiting deployment' })
+            };
+          };
+      Environment:
+        Variables:
+          NODE_ENV: !Ref Environment
+          SQS_QUEUE_URL: !Ref WebhookQueue
+          WEBHOOK_VERIFY_TOKEN: !Ref WebhookVerifyToken
+          WEBHOOK_SECRET: !Ref WebhookSecret
+          DB_HOST: !Ref DBHost
+          DB_NAME: !Ref DBName
+          DB_USER: !Ref DBUser
+          DB_PASSWORD: !Ref DBPassword
+          LOG_LEVEL: !If [IsProduction, "info", "debug"]
+      Timeout: 30
+      MemorySize: 256
+      ReservedConcurrencyLimit: 10
+
+  # DB Processor Lambda Function
+  DBProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "whatsapp-db-processor-${Environment}"
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt DBProcessorRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              body: JSON.stringify({ message: 'DB processor function created, awaiting deployment' })
+            };
+          };
+      Environment:
+        Variables:
+          NODE_ENV: !Ref Environment
+          DB_HOST: !Ref DBHost
+          DB_NAME: !Ref DBName
+          DB_USER: !Ref DBUser
+          DB_PASSWORD: !Ref DBPassword
+          LOG_LEVEL: !If [IsProduction, "info", "debug"]
+      Timeout: 60
+      MemorySize: 512
+      ReservedConcurrencyLimit: 5
+
+  # SQS Event Source Mapping for DB Processor
+  SQSEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt WebhookQueue.Arn
+      FunctionName: !GetAtt DBProcessorFunction.Arn
+      BatchSize: 10
+      MaximumBatchingWindowInSeconds: 5
+      Enabled: true
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  # API Gateway for Webhook Receiver
+  WebhookAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub "whatsapp-webhook-api-${Environment}"
+      Description: "WhatsApp Webhook API Gateway"
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Resource
+  WebhookResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref WebhookAPI
+      ParentId: !GetAtt WebhookAPI.RootResourceId
+      PathPart: webhook
+
+  # API Gateway GET Method (for verification)
+  WebhookGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebhookAPI
+      ResourceId: !Ref WebhookResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookReceiverFunction.Arn}/invocations"
+
+  # API Gateway POST Method (for webhook events)
+  WebhookPostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref WebhookAPI
+      ResourceId: !Ref WebhookResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WebhookReceiverFunction.Arn}/invocations"
+
+  # API Gateway Deployment
+  WebhookAPIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - WebhookGetMethod
+      - WebhookPostMethod
+    Properties:
+      RestApiId: !Ref WebhookAPI
+      StageName: prod
+
+  # Lambda Permission for API Gateway (GET)
+  WebhookReceiverGetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt WebhookReceiverFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookAPI}/*/GET/webhook"
+
+  # Lambda Permission for API Gateway (POST)
+  WebhookReceiverPostPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt WebhookReceiverFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebhookAPI}/*/POST/webhook"
+
+  # CloudWatch Log Groups
+  WebhookReceiverLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/whatsapp-webhook-receiver-${Environment}"
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+  DBProcessorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/whatsapp-db-processor-${Environment}"
+      RetentionInDays: !If [IsProduction, 30, 7]
+
+Outputs:
+  WebhookUrl:
+    Description: "WhatsApp Webhook URL"
+    Value: !Sub "https://${WebhookAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/webhook"
+    Export:
+      Name: !Sub "${AWS::StackName}-WebhookUrl"
+
+  SQSQueueUrl:
+    Description: "SQS Queue URL for webhook events"
+    Value: !Ref WebhookQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-SQSQueueUrl"
+
+  SQSQueueArn:
+    Description: "SQS Queue ARN for webhook events"
+    Value: !GetAtt WebhookQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-SQSQueueArn"
+
+  WebhookReceiverFunctionName:
+    Description: "Webhook Receiver Lambda Function Name"
+    Value: !Ref WebhookReceiverFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-WebhookReceiverFunction"
+
+  DBProcessorFunctionName:
+    Description: "DB Processor Lambda Function Name"
+    Value: !Ref DBProcessorFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-DBProcessorFunction"
